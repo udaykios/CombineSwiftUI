@@ -35,7 +35,7 @@ struct ContentView: View {
         }
         .padding()
         .onAppear{
-            userViewModel.getUsers()
+            self.userViewModel.getUsers()
         }
         
     }

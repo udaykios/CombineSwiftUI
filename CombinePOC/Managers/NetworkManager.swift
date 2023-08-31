@@ -37,58 +37,67 @@ enum NetworkStatus {
 
 class NetWorkViewModel: ObservableObject {
     static let shared = NetWorkViewModel()
-    private var cancellable: AnyCancellable?
+    private var cancellables = Set<AnyCancellable>()
     let url = "https://dummyjson.com/users"
     
-    func networkCall<T: Codable>(endPoint: EndPoints, urlQueries: String? = nil, method: APICallMethod = .get, responseType: T.Type, requestBody: Codable?, contentType: ContentType = .json,event_id:String? = nil,image:UIImage? = nil, completionHandler: @escaping (T?,NetworkStatus) -> Void) {
-        
-        let parameters = [
-            "event_id":event_id
-        ]
-        
-        var urlString = "\(self.url)"
-        if let urlQueries = urlQueries{
-            urlString += "\(endPoint.rawValue)?\(urlQueries)"
-        }
-        else {
-            urlString += endPoint.rawValue
-        }
-        let url = URL(string: urlString)!
-        let boundary = generateBoundary()
-        var request = URLRequest(url: url)
-        request.httpMethod =  method.rawValue
-        request.addValue(contentType.rawValue, forHTTPHeaderField: "Content-Type")
-        if event_id != nil && image != nil{
-            guard let mediaImage = Media(withImage: image!, forKey: "image") else { return }
-            let dataBody = createDataBody(withParameters: parameters, media: [mediaImage], boundary: boundary)
-            request.allHTTPHeaderFields = [
-                "X-User-Agent": "ios",
-                "Accept-Language": "en",
-                "Accept": "application/json",
-                "Content-Type": "multipart/form-data; boundary=\(boundary)",
-                "Authorization":"Bearer \("token")",
-                "Content-Length": "\(dataBody.count)"
+    func networkCall<T: Codable>(endPoint: EndPoints, urlQueries: String? = nil, method: APICallMethod = .get, responseType: T.Type, requestBody: Codable?, contentType: ContentType = .json,event_id:String? = nil,image:UIImage? = nil) -> Future<T, Error> {
+        return Future<T, Error> { [self] promise in
+            
+            let parameters = [
+                "event_id":event_id
             ]
-        }
-        
-        if method != .get && requestBody != nil{
-            request.httpBody = try? requestBody!.toJSONData()
-        }
-        cancellable = URLSession.shared.dataTaskPublisher(for: request)
-            .map(\.data)
-            .decode(type: responseType.self, decoder: JSONDecoder())
-            .receive(on: DispatchQueue.main)
-            .sink { completion in
-                switch completion {
-                case .failure(let error):
-                    completionHandler(nil, .failure)
-                    print("Error fetching data: \(error.localizedDescription)")
-                case .finished:
-                    print("Data fetched successfully")
-                }
-            } receiveValue: { data in
-                completionHandler(data, .success)
+            
+            var urlString = "\(self.url)"
+            if let urlQueries = urlQueries{
+                urlString += "\(endPoint.rawValue)?\(urlQueries)"
             }
+            else {
+                urlString += endPoint.rawValue
+            }
+            let url = URL(string: urlString)!
+            let boundary = generateBoundary()
+            var request = URLRequest(url: url)
+            request.httpMethod =  method.rawValue
+            request.addValue(contentType.rawValue, forHTTPHeaderField: "Content-Type")
+            if event_id != nil && image != nil{
+                guard let mediaImage = Media(withImage: image!, forKey: "image") else { return }
+                let dataBody = createDataBody(withParameters: parameters, media: [mediaImage], boundary: boundary)
+                request.allHTTPHeaderFields = [
+                    "X-User-Agent": "ios",
+                    "Accept-Language": "en",
+                    "Accept": "application/json",
+                    "Content-Type": "multipart/form-data; boundary=\(boundary)",
+                    "Authorization":"Bearer \("token")",
+                    "Content-Length": "\(dataBody.count)"
+                ]
+            }
+            
+            if method != .get && requestBody != nil{
+                request.httpBody = try? requestBody!.toJSONData()
+            }
+            URLSession.shared.dataTaskPublisher(for: url)
+                .tryMap { (data, response) -> Data in
+                    guard let httpResponse = response as? HTTPURLResponse, 200...299 ~= httpResponse.statusCode else {
+                        throw NetworkError.responseError
+                    }
+                    return data
+                }
+                .decode(type: T.self, decoder: JSONDecoder())
+                .receive(on: RunLoop.main)
+                .sink(receiveCompletion: { (completion) in
+                    if case let .failure(error) = completion {
+                        switch error {
+                        case let decodingError as DecodingError:
+                            promise(.failure(decodingError))
+                        case let apiError as NetworkError:
+                            promise(.failure(apiError))
+                        default:
+                            promise(.failure(NetworkError.unknown))
+                        }
+                    }
+                }, receiveValue: { promise(.success($0 as! T)) })
+                .store(in: &self.cancellables)
+        }
     }
     func generateBoundary() -> String {
         return "Boundary-\(UUID().uuidString)"
@@ -155,26 +164,28 @@ extension Data {
     }
 }
 
+
+enum NetworkError: Error {
+    case invalidURL
+    case responseError
+    case unknown
+}
+
+extension NetworkError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return NSLocalizedString("Invalid URL", comment: "Invalid URL")
+        case .responseError:
+            return NSLocalizedString("Unexpected status code", comment: "Invalid response")
+        case .unknown:
+            return NSLocalizedString("Unknown error", comment: "Unknown error")
+        }
+    }
+}
+
+
 /*
- enum NetworkError: Error {
- case invalidURL
- case responseError
- case unknown
- }
- 
- extension NetworkError: LocalizedError {
- var errorDescription: String? {
- switch self {
- case .invalidURL:
- return NSLocalizedString("Invalid URL", comment: "Invalid URL")
- case .responseError:
- return NSLocalizedString("Unexpected status code", comment: "Invalid response")
- case .unknown:
- return NSLocalizedString("Unknown error", comment: "Unknown error")
- }
- }
- }
- 
  class NetWorkViewModel: ObservableObject {
  
  private var cancellable: AnyCancellable?
@@ -232,7 +243,6 @@ extension Data {
  AlertManager.shared.showAlert(aType: .error, headerText: "OOPS!", contentString:  response?.message ?? "")
  }
  }
- 
  */
 
 class NetWorkViewManager: ObservableObject {
